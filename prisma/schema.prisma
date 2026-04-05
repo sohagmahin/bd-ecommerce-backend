@@ -1,0 +1,255 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  INITIATED
+  COMPLETED
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  SSLCOMMERZ
+  BKASH
+  NAGAD
+  CARD
+  COD
+}
+
+// ─── User ─────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(uuid())
+  name          String
+  email         String    @unique
+  phone         String?   @unique
+  password      String
+  role          Role      @default(CUSTOMER)
+  isActive      Boolean   @default(true)
+  isEmailVerified Boolean @default(false)
+  refreshToken  String?
+  avatar        String?
+  address       Address[]
+  orders        Order[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([email])
+  @@index([phone])
+  @@map("users")
+}
+
+model Address {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label      String   @default("Home")  // Home, Work, Other
+  fullName   String
+  phone      String
+  line1      String
+  line2      String?
+  city       String
+  district   String
+  division   String
+  postalCode String?
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@map("addresses")
+}
+
+// ─── Category ─────────────────────────────────────────────────────────────────
+
+model Category {
+  id          String     @id @default(uuid())
+  name        String     @unique
+  slug        String     @unique
+  description String?
+  imageUrl    String?
+  parentId    String?
+  parent      Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryTree")
+  products    Product[]
+  isActive    Boolean    @default(true)
+  sortOrder   Int        @default(0)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([slug])
+  @@map("categories")
+}
+
+// ─── Product ──────────────────────────────────────────────────────────────────
+
+model Product {
+  id              String         @id @default(uuid())
+  name            String
+  slug            String         @unique
+  description     String?
+  shortDescription String?
+  sku             String         @unique
+  price           Decimal        @db.Decimal(10, 2)
+  comparePrice    Decimal?       @db.Decimal(10, 2)   // original/MRP price for showing discount
+  costPrice       Decimal?       @db.Decimal(10, 2)
+  stock           Int            @default(0)
+  lowStockAlert   Int            @default(5)
+  weight          Decimal?       @db.Decimal(8, 2)    // in grams
+  categoryId      String
+  category        Category       @relation(fields: [categoryId], references: [id])
+  images          ProductImage[]
+  orderItems      OrderItem[]
+  tags            String[]
+  isActive        Boolean        @default(true)
+  isFeatured      Boolean        @default(false)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([slug])
+  @@index([categoryId])
+  @@index([isActive])
+  @@map("products")
+}
+
+model ProductImage {
+  id         String   @id @default(uuid())
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  url        String
+  publicId   String   // Cloudinary public_id for deletion
+  altText    String?
+  isPrimary  Boolean  @default(false)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([productId])
+  @@map("product_images")
+}
+
+// ─── Order ────────────────────────────────────────────────────────────────────
+
+model Order {
+  id              String       @id @default(uuid())
+  orderNumber     String       @unique  // e.g. BD-20240101-00001
+  userId          String
+  user            User         @relation(fields: [userId], references: [id])
+  items           OrderItem[]
+  payment         Payment?
+  status          OrderStatus  @default(PENDING)
+
+  // Snapshot of shipping address at time of order
+  shippingName    String
+  shippingPhone   String
+  shippingLine1   String
+  shippingLine2   String?
+  shippingCity    String
+  shippingDistrict String
+  shippingDivision String
+  shippingPostal  String?
+
+  subtotal        Decimal      @db.Decimal(10, 2)
+  shippingFee     Decimal      @db.Decimal(10, 2)  @default(0)
+  discount        Decimal      @db.Decimal(10, 2)  @default(0)
+  total           Decimal      @db.Decimal(10, 2)
+
+  notes           String?
+  statusHistory   OrderStatusHistory[]
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([orderNumber])
+  @@map("orders")
+}
+
+model OrderItem {
+  id          String   @id @default(uuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+
+  // Snapshot product details at time of order
+  productName String
+  productSku  String
+  imageUrl    String?
+  unitPrice   Decimal  @db.Decimal(10, 2)
+  quantity    Int
+  total       Decimal  @db.Decimal(10, 2)
+
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model OrderStatusHistory {
+  id        String      @id @default(uuid())
+  orderId   String
+  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status    OrderStatus
+  note      String?
+  createdAt DateTime    @default(now())
+
+  @@index([orderId])
+  @@map("order_status_history")
+}
+
+// ─── Payment ──────────────────────────────────────────────────────────────────
+
+model Payment {
+  id               String        @id @default(uuid())
+  orderId          String        @unique
+  order            Order         @relation(fields: [orderId], references: [id])
+  method           PaymentMethod
+  status           PaymentStatus @default(PENDING)
+  amount           Decimal       @db.Decimal(10, 2)
+  currency         String        @default("BDT")
+
+  // SSL Commerz fields
+  sslTransactionId String?
+  sslValId         String?
+  sslStoreAmount   Decimal?      @db.Decimal(10, 2)
+  sslCardType      String?
+
+  // bKash fields
+  bkashPaymentId   String?
+  bkashTrxId       String?
+  bkashCustomerMsisdn String?
+
+  // Raw gateway response (for audit)
+  gatewayResponse  Json?
+
+  paidAt           DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([orderId])
+  @@map("payments")
+}
