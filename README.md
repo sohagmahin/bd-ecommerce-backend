@@ -240,6 +240,10 @@ bd-ecommerce/
 
 ## Local Development Setup
 
+> **Recommended:** Use Docker — see [Local Development Setup with Docker](#local-development-setup-with-docker) below. No need to install PostgreSQL or Redis locally.
+
+### Without Docker
+
 ### 1. Clone and install dependencies
 
 ```bash
@@ -254,7 +258,7 @@ npm install
 cp .env.example .env
 ```
 
-Open `.env` and fill in the required values. At minimum for local dev:
+Minimum values required for local dev without Docker:
 
 ```env
 DATABASE_URL="postgresql://postgres:yourpassword@localhost:5432/bd_ecommerce?schema=public"
@@ -272,24 +276,14 @@ APP_URL=http://localhost:5000
 ### 3. Create the PostgreSQL database
 
 ```bash
-# Connect to PostgreSQL
-psql -U postgres
-
-# Inside psql:
-CREATE DATABASE bd_ecommerce;
-\q
+psql -U postgres -c "CREATE DATABASE bd_ecommerce;"
 ```
 
 ### 4. Run migrations and seed
 
 ```bash
-# Generate Prisma client
 npx prisma generate
-
-# Create all tables
 npx prisma migrate dev --name init
-
-# Seed admin user + sample products
 npm run prisma:seed
 ```
 
@@ -304,9 +298,7 @@ Seed creates:
 npm run dev
 ```
 
-Server starts at `http://localhost:5000`
-
-Health check: `GET http://localhost:5000/health`
+Server starts at `http://localhost:5000`. Health check: `GET http://localhost:5000/health`
 
 ### Useful Prisma commands
 
@@ -361,129 +353,109 @@ npx prisma db push         # Push schema changes without a migration file
 
 ---
 
+## Local Development Setup with Docker
+
+The fastest way to get the full stack running locally — no need to install PostgreSQL or Redis.
+
+### Prerequisites
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Mac/Windows) or Docker Engine + Compose plugin (Linux)
+
+### Start
+
+```bash
+cp .env.example .env    # fill in external credentials (Cloudinary, SSLCommerz, bKash, etc.)
+docker compose up --build
+```
+
+This starts three containers: `ecom_app` (Node/Express), `ecom_postgres`, `ecom_redis`.
+
+The app waits for postgres and redis healthchecks before starting.
+
+### First-time database setup
+
+```bash
+docker compose exec app npx prisma migrate dev --name init
+docker compose exec app npm run prisma:seed
+```
+
+### Useful dev commands
+
+```bash
+docker compose up --build          # rebuild after adding npm packages
+docker compose exec app npx prisma studio   # DB browser at localhost:5555
+docker compose down -v             # wipe all data and start fresh
+docker compose logs -f app         # tail app logs
+```
+
+> Add new npm packages on the host (`npm install <pkg>`), then `docker compose up --build` to rebuild the image.
+
+---
+
 ## Production Deployment (Ubuntu 22.04 VPS)
 
 ### 1. Server initial setup
 
 ```bash
-# Update system
 sudo apt update && sudo apt upgrade -y
 
-# Install Node.js 20
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
+# Docker Engine
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER && newgrp docker
 
-# Install PostgreSQL 15
-sudo apt install -y postgresql postgresql-contrib
-
-# Install Redis
-sudo apt install -y redis-server
-sudo systemctl enable redis-server
-
-# Install Nginx
-sudo apt install -y nginx
-
-# Install PM2
-sudo npm install -g pm2
-
-# Install Certbot
-sudo apt install -y certbot python3-certbot-nginx
+# Nginx + Certbot
+sudo apt install -y nginx certbot python3-certbot-nginx
 ```
 
-### 2. PostgreSQL setup
+### 2. Deploy the application
 
 ```bash
-sudo -u postgres psql
-```
-```sql
-CREATE USER ecom_user WITH PASSWORD 'strong_password_here';
-CREATE DATABASE bd_ecommerce OWNER ecom_user;
-GRANT ALL PRIVILEGES ON DATABASE bd_ecommerce TO ecom_user;
-\q
-```
-
-### 3. Deploy the application
-
-```bash
-# Create app directory
-sudo mkdir -p /var/www/bd-ecommerce
-sudo chown $USER:$USER /var/www/bd-ecommerce
-
-# Clone your repository
 git clone <your-repo-url> /var/www/bd-ecommerce
 cd /var/www/bd-ecommerce
 
-# Install production dependencies
-npm ci --omit=dev
-
-# Setup environment
 cp .env.example .env
-nano .env  # fill in production values
+nano .env   # fill in all production values including POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
 
-# Generate Prisma client
-npx prisma generate
-
-# Run database migrations
-npx prisma migrate deploy
-
-# Seed database (only first time)
-npm run prisma:seed
-
-# Create logs directory
-mkdir -p logs
+# Start everything (builds image, runs migrate service, starts app)
+docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-### 4. Configure Nginx
+### 3. First-time database seed
 
 ```bash
-# Copy the included nginx config
+docker compose -f docker-compose.prod.yml exec app node prisma/seed.js
+```
+
+### 4. Configure Nginx + TLS
+
+```bash
 sudo cp nginx.conf /etc/nginx/sites-available/bd-ecommerce
+sudo nano /etc/nginx/sites-available/bd-ecommerce   # set your domain
 
-# Edit with your actual domain
-sudo nano /etc/nginx/sites-available/bd-ecommerce
-# Replace api.yourdomain.com with your actual domain
-
-# Enable the site
 sudo ln -s /etc/nginx/sites-available/bd-ecommerce /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl reload nginx
-```
+sudo nginx -t && sudo systemctl reload nginx
 
-### 5. SSL certificate (Let's Encrypt)
-
-```bash
 sudo certbot --nginx -d api.yourdomain.com
 sudo systemctl reload nginx
 ```
 
-### 6. Start with PM2
-
-```bash
-cd /var/www/bd-ecommerce
-pm2 start ecosystem.config.js --env production
-pm2 save
-pm2 startup  # follow the instructions to auto-start on reboot
-```
-
-### 7. PM2 useful commands
-
-```bash
-pm2 status                        # view all processes
-pm2 logs bd-ecommerce-api         # tail logs
-pm2 reload bd-ecommerce-api       # zero-downtime reload
-pm2 restart bd-ecommerce-api      # hard restart
-pm2 monit                         # live CPU/memory dashboard
-```
-
-### 8. Update deployment
+### 5. Update deployment
 
 ```bash
 cd /var/www/bd-ecommerce
 git pull origin main
-npm ci --omit=dev
-npx prisma generate
-npx prisma migrate deploy
-pm2 reload bd-ecommerce-api
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+> Migrations run automatically via the `migrate` one-shot service on every `up --build`.
+
+### Useful production commands
+
+```bash
+docker compose -f docker-compose.prod.yml logs -f app        # tail logs
+docker compose -f docker-compose.prod.yml ps                 # container status
+docker compose -f docker-compose.prod.yml exec app npx prisma studio  # DB browser (dev only)
+docker compose -f docker-compose.prod.yml restart app        # restart app container
 ```
 
 ---

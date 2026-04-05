@@ -4,6 +4,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Common Commands
 
+### Docker (preferred)
+
+```bash
+# ── Local development ─────────────────────────────────────────────────────────
+docker compose up                  # Start app + postgres + redis
+docker compose up --build          # Rebuild app image first
+docker compose down                # Stop containers (keeps volumes)
+docker compose down -v             # Stop and delete volumes (wipes DB + Redis)
+
+# Run a one-off command inside the running app container
+docker compose exec app npx prisma migrate dev --name <name>
+docker compose exec app npm run prisma:seed
+docker compose exec app npx prisma studio   # exposes :5555
+
+# ── Production (on the VPS) ───────────────────────────────────────────────────
+docker compose -f docker-compose.prod.yml up -d           # start detached
+docker compose -f docker-compose.prod.yml up -d --build   # after a code push
+docker compose -f docker-compose.prod.yml logs -f app     # tail logs
+
+# Run migrations then seed (first deploy only)
+docker compose -f docker-compose.prod.yml exec app npx prisma migrate deploy
+docker compose -f docker-compose.prod.yml exec app node prisma/seed.js
+
+# Zero-downtime restart after code change
+docker compose -f docker-compose.prod.yml build app
+docker compose -f docker-compose.prod.yml up -d app
+```
+
+### Without Docker
+
 ```bash
 # Development
 npm run dev                        # Start with nodemon (auto-reload)
@@ -28,6 +58,20 @@ npm run prisma:studio
 There is no test runner or linter configured. `NODE_ENV=test` suppresses morgan logging.
 
 ## Architecture
+
+### Docker setup
+
+Three compose files serve different purposes:
+
+| File | Purpose |
+|---|---|
+| `docker-compose.yml` | Local dev — mounts source into container, runs `npm run dev` (nodemon), exposes postgres `:5432` and redis `:6379` to host |
+| `docker-compose.prod.yml` | Production — uses the lean `runner` stage, binds app to `127.0.0.1:5000` only (Nginx proxies), postgres/redis ports not exposed, includes a one-shot `migrate` service |
+| `Dockerfile` | Multi-stage: `deps` (prod node_modules) → `builder` (all deps + prisma generate) → `runner` (minimal Alpine, non-root user) |
+
+The `DATABASE_URL` and `REDIS_HOST` environment variables are overridden inside compose files to point to the container service names (`postgres`, `redis`) regardless of what is in `.env`. When running without Docker, those variables in `.env` must point to `localhost`.
+
+The production `.env` needs three extra vars for the postgres container: `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`.
 
 ### Request flow
 
