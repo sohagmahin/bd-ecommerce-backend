@@ -1,4 +1,7 @@
 # ─── Local development compose ────────────────────────────────────────────────
+# All values are read from .env via Docker Compose's automatic variable
+# substitution (${VAR}) and env_file injection into each container.
+#
 # Usage:
 #   docker compose up              # start all services
 #   docker compose up --build      # rebuild app image first
@@ -11,16 +14,17 @@ services:
     image: postgres:16-alpine
     container_name: ecom_postgres
     restart: unless-stopped
+    env_file: .env                  # loads POSTGRES_USER / PASSWORD / DB into container
     environment:
-      POSTGRES_USER: ecom_user
-      POSTGRES_PASSWORD: ecom_pass
-      POSTGRES_DB: bd_ecommerce
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ecom_user -d bd_ecommerce"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -30,13 +34,22 @@ services:
     image: redis:7-alpine
     container_name: ecom_redis
     restart: unless-stopped
-    command: redis-server --save 60 1 --loglevel warning
+    # Start with password only if REDIS_PASSWORD is set in .env
+    command: >
+      sh -c "if [ -n '${REDIS_PASSWORD}' ];
+             then redis-server --requirepass ${REDIS_PASSWORD} --save 60 1 --loglevel warning;
+             else redis-server --save 60 1 --loglevel warning;
+             fi"
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: >
+        sh -c "if [ -n '${REDIS_PASSWORD}' ];
+               then redis-cli -a ${REDIS_PASSWORD} ping;
+               else redis-cli ping;
+               fi"
       interval: 10s
       timeout: 5s
       retries: 5
@@ -45,17 +58,18 @@ services:
   app:
     build:
       context: .
-      target: builder      # use the builder stage so devDeps (nodemon) are present
+      target: builder               # builder stage has devDeps (nodemon)
     container_name: ecom_app
     restart: unless-stopped
-    env_file: .env
+    env_file: .env                  # loads all app env vars from .env
     environment:
       NODE_ENV: development
-      DATABASE_URL: postgresql://ecom_user:ecom_pass@postgres:5432/bd_ecommerce?schema=public
+      # Override DB/Redis to point at sibling containers, not localhost
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
       REDIS_HOST: redis
       REDIS_PORT: 6379
     ports:
-      - "5000:5000"
+      - "${PORT:-5000}:${PORT:-5000}"
     volumes:
       # Mount source for live reload — node_modules stays inside container
       - .:/app

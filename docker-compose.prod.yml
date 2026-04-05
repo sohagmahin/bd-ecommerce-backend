@@ -1,25 +1,26 @@
-# ─── Production compose override ─────────────────────────────────────────────
+# ─── Production compose ───────────────────────────────────────────────────────
+# All values are read from .env via Docker Compose's automatic variable
+# substitution (${VAR}) and env_file injection into each container.
+#
 # Usage (on the VPS):
 #   docker compose -f docker-compose.prod.yml up -d
 #   docker compose -f docker-compose.prod.yml up -d --build   # after a code push
 #   docker compose -f docker-compose.prod.yml logs -f app     # tail logs
-#   docker compose -f docker-compose.prod.yml exec app npx prisma migrate deploy
-#   docker compose -f docker-compose.prod.yml exec app node prisma/seed.js
 
 services:
-
   # ── PostgreSQL ───────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: ecom_postgres
     restart: always
+    env_file: .env # loads POSTGRES_USER / PASSWORD / DB into container
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    # Not exposing port 5432 to host in production — app talks to it on internal network
+    # Port NOT exposed to host — app reaches it on the internal Docker network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -31,9 +32,11 @@ services:
     image: redis:7-alpine
     container_name: ecom_redis
     restart: always
+    env_file: .env
     command: redis-server --requirepass ${REDIS_PASSWORD} --save 60 1 --loglevel warning
     volumes:
       - redis_data:/data
+    # Port NOT exposed to host
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
@@ -44,24 +47,25 @@ services:
   app:
     build:
       context: .
-      target: runner        # use the lean production stage
+      target: runner # lean Alpine image, non-root user
     container_name: ecom_app
     restart: always
-    env_file: .env
+    env_file: .env # loads all app env vars from .env
     environment:
       NODE_ENV: production
+      # Override DB/Redis to point at sibling containers, not localhost
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
       REDIS_HOST: redis
       REDIS_PORT: 6379
     ports:
-      - "127.0.0.1:5000:5000"   # bind to loopback only — Nginx proxies from outside
+      - "127.0.0.1:${PORT:-5000}:${PORT:-5000}" # loopback only — Nginx proxies from outside
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
 
-  # ── Database migration runner (one-shot, exits after running) ─────────────────
+  # ── Migration runner (one-shot, exits after completing) ───────────────────────
   migrate:
     build:
       context: .
